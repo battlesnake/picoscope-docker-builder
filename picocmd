@@ -1,0 +1,164 @@
+#!/bin/bash
+
+set -euo pipefail
+
+trap 'echo "FAILED"' ERR
+
+declare base_name
+declare base_image
+declare repo="markkc/picoscope"
+declare -a images=()
+
+function get_base {
+	base_name="${1:-ubuntu}"
+	case "$base_name" in
+	ubuntu) base_image='ubuntu:20.04';;
+	opensuse) base_image='opensuse/leap:15.3';;
+	*) echo >&2 "Invalid base (supported: ubuntu opensuse)";;
+	esac
+}
+
+function build {
+	get_base "${1:-}"
+	shift || true
+
+	local timestamp
+	timestamp="$(date -u +%Y%m%d)"
+	local builder="pico-build-$base_name-$timestamp"
+
+	docker rmi -f "$repo:$base_name" &>/dev/null || true
+	docker rmi -f "$repo:$base_name-$timestamp" &>/dev/null || true
+	docker rm -f "$builder" &>/dev/null || true
+
+	#
+	# Pico packages do a lot of stuff that causes issues with docker e.g. trying
+	# to set negative niceness, telling udev to reload config...
+	#
+	# So we can't just use docker-build to build the images, we need to do things
+	# a bit more intrusively.
+	#
+	docker run \
+		--init \
+		--name "$builder" \
+		--privileged \
+		--volume "$PWD/installer:/installer:ro" \
+		--volume "/sys/fs/cgroup:/sys/fs/cgroup:ro" \
+		--tmpfs /tmp \
+		--tmpfs /run \
+		"$base_image" \
+		bash -ex /installer
+	docker cp "$PWD/bootstrapper" "$builder":/
+	docker commit --change 'entrypoint ["/bin/bash", "/bootstrapper"]' "$builder" "$repo:$base_name-$timestamp"
+	docker rm "$builder"
+
+	docker tag "$repo:$base_name-$timestamp" "$repo:$base_name"
+	images+=(
+		"$repo:$base_name-$timestamp"
+		"$repo:$base_name"
+	)
+}
+
+function run {
+	get_base "${1:-}"
+	shift || true
+
+	local pico_gid
+	if ! pico_gid="$(getent group picoscope 2>/dev/null | cut -f3 -d:)"; then
+		pico_gid=""
+	fi
+
+	docker run \
+		--init \
+		--interactive \
+		--tty \
+		--privileged \
+		--ipc host \
+		--network host \
+		--env uid="$(id -u)" \
+		--env gid="$(id -g)" \
+		--env uname="$(id -un)" \
+		--env gname="$(id -gn)" \
+		--env home="$HOME" \
+		--env pico_gid="$pico_gid" \
+		--env hostname="$(hostname)" \
+		--env verbose="${verbose:-0}" \
+		--volume "$HOME:$HOME:rw" \
+		--volume "$PWD/bootstrapper:/bootstrapper:ro" \
+		--volume "/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+		--volume "$HOME/.Xauthority:$HOME/.Xauthority:rw" \
+		--volume "$XDG_RUNTIME_DIR:$XDG_RUNTIME_DIR:rw" \
+		--tmpfs /tmp \
+		--tmpfs /run \
+		--env DISPLAY \
+		--env XDG_RUNTIME_DIR \
+		"$repo:$base_name" \
+		"$@"
+}
+
+function push {
+	for image in "${images[@]}"; do
+		docker push "$image"
+	done
+}
+
+function picocmd_build {
+	build "$@"
+}
+
+function picocmd_run {
+	run "$@"
+}
+
+function picocmd_build_and_push {
+	build "$@"
+	push "$@"
+}
+
+function picocmd_setup {
+	if (( UID )); then
+		echo >&2 "This command must be run as root"
+		exit 1
+	fi
+	if ! getent group picoscope &>/dev/null; then
+		groupadd picoscope
+		gpasswd -a "$(id -un)" picoscope
+		echo "You will need to log out and back in again, before then replugging devices"
+	fi
+	echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="0ce9", GROUP="picoscope", MODE="660"' > /etc/udev/rules.d/95-picoscope.rules
+	if which udevadm &>/dev/null; then
+		udevadm control --reload
+	fi
+	echo "Unplug and replug Picoscope devices, so they can be re-detected"
+	echo "Setup complete."
+}
+
+function picocmd_help {
+	printf -- "%s\n" \
+		"./picocmd <command>" \
+		"" \
+		"Commands:" \
+		" - setup                     : setup host for running picoscope" \
+		" - run   [<distro>]          : run picoscope from the chosen-distro-based image" \
+		" - build [<distro>]          : build picoscope image on chosen distro" \
+		" - build_and_push [<distro>] : build and push images based on chosen distro" \
+		"" \
+		"Distros:" \
+		" - ubuntu         : Ubuntu 20.04 (default)" \
+		" - opensuse       : OpenSUSE 15.3" \
+		""
+	exit 0
+}
+
+if (( $# == 0 )); then
+	set -- help
+fi
+
+declare cmd="picocmd_$1"
+shift
+
+if ! [ "$(type -t "$cmd")" == function ]; then
+	echo "Invalid command: ${cmd:8}"
+	exit 1
+fi
+
+"$cmd" "$@"

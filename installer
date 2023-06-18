@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# THIS IS TO BE RUN INSIDE THE DOCKER CONTAINER, INITIATED BY THE picocmd SCRIPT
+# DO NOT RUN THIS MANUALLY, ESPECIALLY DO NOT RUN IT IN THE HOST ENVIRONMENT.
+
+set -a
+source /etc/os-release
+set +a
+
+set -xeuo pipefail
+
+function setup_ubuntu {
+	export DEBIAN_FRONTEND="noninteractive"
+	apt update -qqy
+	apt install -qqy wget gnupg ca-certificates sudo
+	gpg --homedir /tmp --no-default-keyring --keyring /usr/share/keyrings/mono-official-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 3FA7E0328081BFF6A14DA29AA6A19B38D3D831EF
+	echo "deb [signed-by=/usr/share/keyrings/mono-official-archive-keyring.gpg] https://download.mono-project.com/repo/ubuntu stable-focal main" > /etc/apt/sources.list.d/mono-official-stable.list
+	wget -qO - https://labs.picotech.com/Release.gpg.key | apt-key add -
+	echo "deb https://labs.picotech.com/picoscope7/debian/ picoscope main" > /etc/apt/sources.list.d/picoscope7.list
+	apt update -qqy
+	apt install -qqy mono-devel
+	ln -s /bin/true /bin/udevadm
+	mkdir -p /etc/udev/rules.d
+	apt install -qqy libps2000 libps2000a libps3000 libps3000a libps4000 libps4000a libps5000 libps5000a libps6000
+	apt install -qqy picoscope
+	rm /bin/udevadm
+}
+
+function setup_opensuse {
+	zypper -n refresh
+	zypper -n install curl bash sudo mono-complete mono-core which
+	export SHELL=bash
+	curl https://labs.picotech.com/repomd.xml.key > /opt/pico-repo-key.xml
+	rpmkeys --import /opt/pico-repo-key.xml
+	zypper -n addrepo https://labs.picotech.com/picoscope7/rpm/ picoscope
+	zypper -n refresh
+	ln -s /bin/true /bin/udevadm
+	mkdir -p /etc/udev/rules.d
+	zypper -n install libps2000 libps2000a libps3000 libps3000a libps4000 libps4000a libps5000 libps5000a libps6000
+	zypper -n install picoscope
+	rm /bin/udevadm
+}
+
+if (( UID )); then
+	exec sudo -- "$0" "$@"
+fi
+
+trap 'echo "FAILED on $LINENO"' ERR
+
+case "$ID_LIKE" in
+	*suse*) setup_opensuse;;
+	*debian*) setup_ubuntu;;
+	*) echo >&2 "Unsupported OS"; exit 1;;
+esac
+
+echo "Installation complete"

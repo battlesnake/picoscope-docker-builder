@@ -1,0 +1,41 @@
+#!/bin/bash
+
+# THIS IS TO BE RUN INSIDE THE DOCKER CONTAINER, INITIATED BY THE picocmd SCRIPT
+# DO NOT RUN THIS MANUALLY, ESPECIALLY DO NOT RUN IT IN THE HOST ENVIRONMENT.
+
+set -euo pipefail
+
+if ! (( $# )); then
+	if (( "${verbose:-0}" )); then
+		set -- /usr/bin/mono /opt/picoscope/lib/PicoScope.GTK.exe
+	else
+		set -- /opt/picoscope/bin/picoscope
+	fi
+fi
+
+if [ -n "${hostname:-}" ]; then
+	echo "127.0.0.1 $hostname" >> /etc/hosts
+fi
+
+if (( uid )); then
+	groupdel "$gname" &>/dev/null || true
+	userdel "$uname" &>/dev/null || true
+
+	groupadd --non-unique -g "$gid" "$gname"
+	useradd --non-unique -u "$uid" -g "$gname" -d "$home" "$uname"
+
+	if [ -n "${pico_gid}" ]; then
+		groupadd --non-unique -g "$pico_gid" picoscope
+		gpasswd -a "$uname" picoscope >/dev/null
+	fi
+else
+	uname=root
+	uid=0
+fi
+
+exec sudo -u "$uname" -- \
+	env \
+	DISPLAY="$DISPLAY" \
+	XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+	MONO_PATH=/opt/picoscope/lib \
+	"$@"
