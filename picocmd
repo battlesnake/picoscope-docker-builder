@@ -9,6 +9,9 @@ declare base_image
 declare repo="markkc/picoscope"
 declare -a images=()
 
+declare self="$(realpath "$0")"
+declare self_path="$(realpath "$(dirname "${self}")")"
+
 function get_base {
 	base_name="${1:-ubuntu}"
 	case "$base_name" in
@@ -41,13 +44,13 @@ function build {
 		--init \
 		--name "$builder" \
 		--privileged \
-		--volume "$PWD/installer:/installer:ro" \
+		--volume "$self_path/installer:/installer:ro" \
 		--volume "/sys/fs/cgroup:/sys/fs/cgroup:ro" \
 		--tmpfs /tmp \
 		--tmpfs /run \
 		"$base_image" \
 		bash -ex /installer
-	docker cp "$PWD/bootstrapper" "$builder":/
+	docker cp "$self_path/bootstrapper" "$builder":/
 	docker commit --change 'entrypoint ["/bin/bash", "/bootstrapper"]' "$builder" "$repo:$base_name-$timestamp"
 	docker rm "$builder"
 
@@ -83,7 +86,7 @@ function run {
 		--env hostname="$(hostname)" \
 		--env verbose="${verbose:-0}" \
 		--volume "$HOME:$HOME:rw" \
-		--volume "$PWD/bootstrapper:/bootstrapper:ro" \
+		--volume "$self_path/bootstrapper:/bootstrapper:ro" \
 		--volume "/tmp/.X11-unix:/tmp/.X11-unix:rw" \
 		--volume "$HOME/.Xauthority:$HOME/.Xauthority:rw" \
 		--volume "$XDG_RUNTIME_DIR:$XDG_RUNTIME_DIR:rw" \
